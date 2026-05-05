@@ -1,0 +1,80 @@
+import requests
+import os
+import glob
+from lxml import etree
+import time
+
+# --- CONFIGURAÇÕES DE CAMINHOS ---
+PASTA_PROTOCOLOS = "protocolos"
+PASTA_RECIBOS = "recibos"
+# Endpoint de CONSULTA (Diferente do de envio)
+URL_CONSULTA_BASE = "https://reinf.receita.economia.gov.br/consulta/lotes/"[cite: 1]
+
+# --- CONFIGURAÇÕES DO CERTIFICADO A3 ---
+CERTIFICADO = "caminho_do_seu_certificado" 
+
+def consultar_protocolos():
+    headers = {
+        'Accept': 'application/xml'[cite: 1]
+    }
+
+    # 1. Busca todos os arquivos de protocolo pendentes
+    arquivos_prot = glob.glob(f"{PASTA_PROTOCOLOS}/*.txt")
+    
+    if not arquivos_prot:
+        print("Nenhum protocolo pendente para consulta.")
+        return
+
+    for arquivo_path in arquivos_prot:
+        nome_arquivo = os.path.basename(arquivo_path)
+        
+        with open(arquivo_path, 'r') as f:
+            protocolo = f.read().strip()
+
+        print(f"Consultando Protocolo: {protocolo}...")
+
+        try:
+            # 2. Executa a consulta via GET (REST Assíncrono)
+            url_final = f"{URL_CONSULTA_BASE}{protocolo}"[cite: 1]
+            response = requests.get(
+                url_final, 
+                headers=headers, 
+                cert=CERTIFICADO, 
+                verify=True
+            )
+
+            if response.status_code == 200:[cite: 1]
+                root = etree.fromstring(response.content)
+                # Namespace do retorno
+                ns = {'ns': 'http://www.reinf.esocial.gov.br/schemas/retornoLoteEventosAssincrono/v1_00_00'}
+                
+                # Verifica o código de resposta (1 = Processando, 2 = Concluído)
+                cd_resposta = root.xpath('//ns:cdResposta', namespaces=ns)[0].text
+
+                if cd_resposta == "2":[cite: 1]
+                    print(f"Lote {protocolo} processado com sucesso!")
+                    
+                    # 3. Salva o XML de retorno completo na pasta 'recibos'
+                    nome_recibo = nome_arquivo.replace(".txt", ".xml").replace("PROT_", "RECIBO_")
+                    caminho_recibo = os.path.join(PASTA_RECIBOS, nome_recibo)
+                    
+                    with open(caminho_recibo, 'wb') as f_rec:
+                        f_rec.write(response.content)
+                    
+                    # 4. Remove o protocolo da pasta de pendentes
+                    os.remove(arquivo_path)
+                    print(f"Recibo salvo e protocolo removido.")
+                
+                elif cd_resposta == "1":[cite: 1]
+                    print(f"Lote {protocolo} ainda está em processamento pela Receita. Tentaremos mais tarde.")
+                else:
+                    print(f"Aviso: Código de resposta inesperado ({cd_resposta}) para o protocolo {protocolo}.")
+
+            else:
+                print(f"Erro na consulta ({response.status_code}): {response.text}")[cite: 1]
+
+        except Exception as e:
+            print(f"Falha ao consultar protocolo {protocolo}: {e}")
+
+if __name__ == "__main__":
+    consultar_protocolos()
