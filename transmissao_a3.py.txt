@@ -1,89 +1,231 @@
 import os
 import glob
 import subprocess
-from config import PASTA_ENVIOS, PASTA_RECEBIDOS, PASTA_PROTOCOLOS, URL_PRODUCAO
+import time
+from config import (
+    PASTA_ENVIOS, PASTA_RECEBIDOS, PASTA_PROTOCOLOS,
+    URL_PRODUCAO, PROXY_URL, TIMEOUT_TRANSMISSAO,
+    CERT_SUBJECT_FILTER
+)
+
+# --- Constantes de Retry ---
+MAX_TENTATIVAS = 3
+DELAY_ENTRE_TENTATIVAS = 5  # segundos
+
 
 def transmitir_via_powershell(caminho_xml, url):
     """
-    Script focado EXCLUSIVAMENTE na entrega e recebimento da resposta.
+    Transmissão via PowerShell com System.Net.HttpWebRequest (baixo nível).
+    
+    CORREÇÕES APLICADAS vs versão anterior:
+    1. Substituído Invoke-WebRequest por HttpWebRequest (controle total do TLS)
+    2. Adicionado Keep-Alive explícito (evita "conexão subjacente fechada")
+    3. Adicionado MaxServicePointIdleTime (impede .NET de matar conexão cedo)
+    4. Body enviado como byte[] (não string - evita encoding mismatch)
+    5. Suporte a proxy corporativo configurável
+    6. Headers SOAP obrigatórios (SOAPAction, Accept)
+    7. Retry automático com backoff
     """
-    ps_cmd = f"""
-    $ErrorActionPreference = 'Stop'
-    [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("utf-8")
-    
-    # 1. Configurações críticas de rede
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    [Net.ServicePointManager]::Expect100Continue = $false
-    
-    # 2. Localiza o certificado para o handshake SSL
-    $cert = Get-ChildItem -Path Cert:\\CurrentUser\\My | Where-Object {{ $_.Subject -like "*JONATAS DUTRA GOMES*" }} | Select-Object -First 1
-    
-    if (-not $cert) {{
-        Write-Error "Certificado nao encontrado."
-        exit 1
-    }}
 
-    try {{
-        # Garante leitura sem caracteres de controle (BOM) que quebram a assinatura
-        $bytes = [System.IO.File]::ReadAllBytes("{caminho_xml}")
-        $encoding = New-Object System.Text.UTF8Encoding($false)
-        $xml = $encoding.GetString($bytes)
-        
-        $userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        
-        # O Invoke-WebRequest serve como ponte, disparando o PIN do hardware automaticamente
-        $response = Invoke-WebRequest -Uri "{url}" `
-            -Method Post `
-            -Body $xml `
-            -Certificate $cert `
-            -ContentType "application/xml; charset=utf-8" `
-            -UserAgent $userAgent `
-            -TimeoutSec 60
-        
-        Write-Output $response.Content
-    }} catch {{
-        if ($_.Exception.Response) {{
-            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-            $resBody = $reader.ReadToEnd()
-            Write-Output $resBody
-        }} else {{
-            Write-Error $_.Exception.Message
+    # Normaliza caminho para PowerShell (barras invertidas)
+    caminho_ps = caminho_xml.replace("/", "\\")
+
+    # Bloco de configuração de proxy (condicional)
+    bloco_proxy = ""
+    if PROXY_URL:
+        bloco_proxy = f"""
+    # 3b. Configuração de Proxy Corporativo
+    $proxy = New-Object System.Net.WebProxy("{PROXY_URL}")
+    $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+    $req.Proxy = $proxy
+    """
+    else:
+        bloco_proxy = """
+    # 3b. Sem proxy corporativo - usa configuração do sistema
+    $req.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+    $req.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+    """
+
+    ps_cmd = f"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("utf-8")
+
+# ============================================================
+# 1. CONFIGURAÇÕES CRÍTICAS DE REDE (TLS + ServicePoint)
+# ============================================================
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::Expect100Continue = $false
+
+# CRUCIAL: Impede o .NET de fechar a conexão antes de receber a resposta
+# Este era o causador do erro "A conexão subjacente estava fechada"
+[Net.ServicePointManager]::MaxServicePointIdleTime = 300000   # 5 minutos
+[Net.ServicePointManager]::DefaultConnectionLimit = 10
+
+# ============================================================
+# 2. LOCALIZA O CERTIFICADO A3 PARA HANDSHAKE SSL
+# ============================================================
+$cert = Get-ChildItem -Path Cert:\\CurrentUser\\My | Where-Object {{ $_.Subject -like "{CERT_SUBJECT_FILTER}" }} | Select-Object -First 1
+
+if (-not $cert) {{
+    Write-Error "CERTIFICADO NAO ENCONTRADO. Verifique o token A3 conectado e o filtro em CERT_SUBJECT_FILTER no config.py"
+    exit 1
+}}
+
+# Log de diagnóstico (útil para troubleshooting)
+Write-Host "[OK] Certificado localizado: $($cert.Subject)"
+Write-Host "[OK] Thumbprint: $($cert.Thumbprint)"
+Write-Host "[OK] Vencimento: $($cert.NotAfter)"
+
+# ============================================================
+# 3. MONTA O HttpWebRequest (CONTROLE TOTAL DO TLS)
+# ============================================================
+# Usa HttpWebRequest em vez de Invoke-WebRequest porque:
+# - Permite configurar KeepAlive explicitamente
+# - Permite configurar ServicePoint (idle time, connection limit)
+# - Controle fino do client certificate no handshake
+$req = [System.Net.HttpWebRequest]::Create("{url}")
+$req.Method = "POST"
+$req.ContentType = "application/xml; charset=utf-8"
+$req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+$req.Timeout = {TIMEOUT_TRANSMISSAO * 1000}
+$req.ReadWriteTimeout = {TIMEOUT_TRANSMISSAO * 1000}
+
+# CRUCIAL: Manter conexão viva até receber resposta completa
+$req.KeepAlive = $true
+$req.ProtocolVersion = [System.Version]::new(1, 1)
+
+# Headers obrigatórios para o webservice SOAP da Receita
+$req.Headers.Add("SOAPAction", "http://www.reinf.esocial.gov.br/schemas/envioLoteEventosAssincrono/v1_00_00")
+$req.Accept = "application/xml"
+
+# Anexa o certificado A3 ao request (dispara janela de PIN)
+$req.ClientCertificates.Add($cert)
+{bloco_proxy}
+
+# ============================================================
+# 4. LÊ O XML COMO BYTES (NÃO STRING) E ENVIA
+# ============================================================
+# Lê como byte[] para evitar qualquer transformação de encoding
+# que possa invalidar a assinatura digital
+$bytes = [System.IO.File]::ReadAllBytes("{caminho_ps}")
+$req.ContentLength = $bytes.Length
+
+try {{
+    # Obtém o stream de saída e escreve os bytes
+    $stream = $req.GetRequestStream()
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Close()
+
+    # ============================================================
+    # 5. RECEBE A RESPOSTA
+    # ============================================================
+    $resp = $req.GetResponse()
+    $reader = New-Object System.IO.StreamReader($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
+    $content = $reader.ReadToEnd()
+    $reader.Close()
+
+    Write-Output $content
+
+}} catch [System.Net.WebException] {{
+    # Tenta extrair o corpo do erro (a Receita retorna detalhes no 422/500)
+    if ($_.Exception.Response) {{
+        try {{
+            $errStream = $_.Exception.Response.GetResponseStream()
+            $errReader = New-Object System.IO.StreamReader($errStream, [System.Text.Encoding]::UTF8)
+            $errBody = $errReader.ReadToEnd()
+            $errReader.Close()
+            Write-Output "HTTP_ERROR:$($_.Exception.Response.StatusCode)::BODY::$errBody"
+        }} catch {{
+            Write-Error "HTTP_ERROR:$($_.Exception.Response.StatusCode) - Nao foi possivel ler o corpo do erro."
             exit 1
         }}
+    }} else {{
+        Write-Error "CONEXAO_FALHOU::$($_.Exception.Message)"
+        exit 1
     }}
-    """
-    
+}} catch {{
+    Write-Error "ERRO_INESPERADO::$($_.Exception.Message)"
+    exit 1
+}}
+"""
+
     process = subprocess.run(
-        ["powershell", "-Command", ps_cmd], 
-        capture_output=True, text=True, encoding='cp1252', errors='replace'
+        ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+        capture_output=True, text=True, encoding='cp1252', errors='replace',
+        timeout=TIMEOUT_TRANSMISSAO + 30  # margem de segurança
     )
     return process.returncode, process.stdout, process.stderr
 
+
+def transmitir_com_retry(caminho_xml, url):
+    """
+    Executa a transmissão com retry automático e backoff.
+    O servidor da Receita pode rejeitar a 1ª tentativa por race condition no TLS.
+    """
+    nome_arq = os.path.basename(caminho_xml)
+
+    for tentativa in range(1, MAX_TENTATIVAS + 1):
+        print(f"[*] Tentativa {tentativa}/{MAX_TENTATIVAS}: {nome_arq}...")
+
+        return_code, stdout, stderr = transmitir_via_powershell(caminho_xml, url)
+
+        # Sucesso
+        if return_code == 0 and stdout.strip() and "HTTP_ERROR" not in stdout:
+            return return_code, stdout, stderr
+
+        # Erro de conexão - tenta novamente
+        if tentativa < MAX_TENTATIVAS:
+            print(f"[!] Falha na tentativa {tentativa}. Aguardando {DELAY_ENTRE_TENTATIVAS}s antes de retry...")
+            time.sleep(DELAY_ENTRE_TENTATIVAS)
+        else:
+            print(f"[X] Todas as {MAX_TENTATIVAS} tentativas falharam.")
+            return return_code, stdout, stderr
+
+    return return_code, stdout, stderr
+
+
 def iniciar_transmissao():
-    print("--- Modulo de Transmissao EFD-REINF ---")
+    """Ponto de entrada principal do módulo de transmissão."""
+    print("=" * 50)
+    print("  MÓDULO DE TRANSMISSÃO EFD-REINF (Token A3)")
+    print("=" * 50)
+
     arquivos = glob.glob(os.path.join(PASTA_ENVIOS, "*.xml"))
-    if not arquivos: return
+    if not arquivos:
+        print("[!] Nenhum arquivo XML encontrado na pasta envios/.")
+        return
+
+    print(f"[OK] {len(arquivos)} lote(s) encontrado(s) para transmissão.\n")
 
     for arq_path in arquivos:
         nome_arq = os.path.basename(arq_path)
-        print(f"[*] Enviando: {nome_arq}...")
-        
-        return_code, stdout, stderr = transmitir_via_powershell(arq_path, URL_PRODUCAO)
         caminho_prot = os.path.join(PASTA_PROTOCOLOS, f"RESPOSTA_{nome_arq}")
-        
-        if return_code == 0 and stdout.strip():
+
+        return_code, stdout, stderr = transmitir_com_retry(arq_path, URL_PRODUCAO)
+
+        if return_code == 0 and stdout.strip() and "HTTP_ERROR" not in stdout:
+            # Salva resposta da Receita
             with open(caminho_prot, 'w', encoding='utf-8') as f:
                 f.write(stdout)
-            
+
+            # Verifica se o lote foi aceito
             if "<cdStatus>1</cdStatus>" in stdout or "<retornoLoteEventos" in stdout:
-                os.rename(arq_path, os.path.join(PASTA_RECEBIDOS, nome_arq))
-                print(f"[✓] Transmitido e validado!")
+                # Move para recebidos
+                destino = os.path.join(PASTA_RECEBIDOS, nome_arq)
+                os.rename(arq_path, destino)
+                print(f"[✓] Lote transmitido e aceito! Movido para recebidos/")
             else:
-                print(f"[!] Erro logico da Receita. Analise: RESPOSTA_{nome_arq}")
+                print(f"[!] Lote transmitido mas com erro lógico. Analise: RESPOSTA_{nome_arq}")
         else:
+            # Salva erro para diagnóstico
+            erro_completo = f"ERRO DE REDE (após {MAX_TENTATIVAS} tentativas)\n\n"
+            erro_completo += f"STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
             with open(caminho_prot, 'w', encoding='utf-8') as f:
-                f.write(f"ERRO DE REDE:\n{stderr}")
-            print(f"[X] Falha na conexao HTTP/SSL.")
+                f.write(erro_completo)
+            print(f"[X] Falha na transmissão. Detalhes em: RESPOSTA_{nome_arq}")
+
+        print()  # separador entre lotes
+
 
 if __name__ == "__main__":
     iniciar_transmissao()

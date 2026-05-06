@@ -1,80 +1,163 @@
 import os
-import glob
 import subprocess
-from config import PASTA_PROTOCOLOS, URL_CONSULTA
+from config import (
+    PASTA_PROTOCOLOS, URL_CONSULTA, PROXY_URL,
+    TIMEOUT_CONSULTA, CERT_SUBJECT_FILTER
+)
+
 
 def consultar_via_powershell(protocolo, url):
     """
-    Realiza a consulta do lote na Receita Federal via protocolo.
-    O Token A3 é exigido APENAS para estabelecer o túnel SSL/TLS da consulta.
+    Consulta de lote via PowerShell com HttpWebRequest (mesma abordagem da transmissão).
+    
+    CORREÇÕES APLICADAS vs versão anterior:
+    1. Substituído Invoke-WebRequest por HttpWebRequest (controle total do TLS)
+    2. Keep-Alive explícito + MaxServicePointIdleTime
+    3. Body como byte[] (evita problemas com aspas no XML inline)
+    4. Suporte a proxy corporativo
+    5. Headers SOAP obrigatórios
     """
-    # Monta o XML de requisição de consulta padrão do XSD
+
+    # Bloco de configuração de proxy (condicional)
+    bloco_proxy = ""
+    if PROXY_URL:
+        bloco_proxy = f"""
+    $proxy = New-Object System.Net.WebProxy("{PROXY_URL}")
+    $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+    $req.Proxy = $proxy
+    """
+    else:
+        bloco_proxy = """
+    $req.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+    $req.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+    """
+
+    # XML de consulta montado como arquivo temporário (evita problemas de escape no PowerShell)
     xml_consulta = f"""<?xml version="1.0" encoding="utf-8"?>
-    <Reinf xmlns="http://www.reinf.esocial.gov.br/schemas/envioLoteEventosAssincrono/v1_00_00">
-      <consultaLoteEventos>
-        <protocoloEnvio>{protocolo}</protocoloEnvio>
-      </consultaLoteEventos>
-    </Reinf>"""
+<Reinf xmlns="http://www.reinf.esocial.gov.br/schemas/envioLoteEventosAssincrono/v1_00_00">
+  <consultaLoteEventos>
+    <protocoloEnvio>{protocolo}</protocoloEnvio>
+  </consultaLoteEventos>
+</Reinf>"""
+
+    # Cria arquivo temporário com o XML de consulta
+    temp_xml_path = os.path.join(PASTA_PROTOCOLOS, "_temp_consulta.xml")
+    with open(temp_xml_path, 'w', encoding='utf-8') as f:
+        f.write(xml_consulta)
+
+    temp_xml_ps = temp_xml_path.replace("/", "\\")
 
     ps_cmd = f"""
-    $ErrorActionPreference = 'Stop'
-    [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("utf-8")
-    
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    [Net.ServicePointManager]::Expect100Continue = $false
-    
-    # INVOCAÇÃO DO TOKEN A3: Acesso ao hardware para autenticação HTTPS
-    $cert = Get-ChildItem -Path Cert:\\CurrentUser\\My | Where-Object {{ $_.Subject -like "*JONATAS DUTRA GOMES*" }} | Select-Object -First 1
-    
-    if (-not $cert) {{
-        Write-Error "Certificado A3 nao encontrado no Windows."
-        exit 1
-    }}
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("utf-8")
 
-    try {{
-        $userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        
-        $response = Invoke-WebRequest -Uri "{url}" `
-            -Method Post `
-            -Body '{xml_consulta}' `
-            -Certificate $cert `
-            -ContentType "application/xml; charset=utf-8" `
-            -UserAgent $userAgent `
-            -TimeoutSec 60
-        
-        Write-Output $response.Content
-    }} catch {{
-        if ($_.Exception.Response) {{
-            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-            Write-Output $reader.ReadToEnd()
-        }} else {{
-            Write-Error $_.Exception.Message
+# 1. Configurações de rede
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::Expect100Continue = $false
+[Net.ServicePointManager]::MaxServicePointIdleTime = 300000
+[Net.ServicePointManager]::DefaultConnectionLimit = 10
+
+# 2. Localiza o certificado A3
+$cert = Get-ChildItem -Path Cert:\\CurrentUser\\My | Where-Object {{ $_.Subject -like "{CERT_SUBJECT_FILTER}" }} | Select-Object -First 1
+
+if (-not $cert) {{
+    Write-Error "Certificado A3 nao encontrado no Windows."
+    exit 1
+}}
+
+# 3. Monta HttpWebRequest
+$req = [System.Net.HttpWebRequest]::Create("{url}")
+$req.Method = "POST"
+$req.ContentType = "application/xml; charset=utf-8"
+$req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+$req.Timeout = {TIMEOUT_CONSULTA * 1000}
+$req.ReadWriteTimeout = {TIMEOUT_CONSULTA * 1000}
+$req.KeepAlive = $true
+$req.ProtocolVersion = [System.Version]::new(1, 1)
+$req.Headers.Add("SOAPAction", "http://www.reinf.esocial.gov.br/schemas/consultaLoteEventos/v1_00_00")
+$req.Accept = "application/xml"
+$req.ClientCertificates.Add($cert)
+{bloco_proxy}
+
+# 4. Lê e envia o XML como bytes
+$bytes = [System.IO.File]::ReadAllBytes("{temp_xml_ps}")
+$req.ContentLength = $bytes.Length
+
+try {{
+    $stream = $req.GetRequestStream()
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Close()
+
+    # 5. Recebe resposta
+    $resp = $req.GetResponse()
+    $reader = New-Object System.IO.StreamReader($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
+    $content = $reader.ReadToEnd()
+    $reader.Close()
+
+    Write-Output $content
+
+}} catch [System.Net.WebException] {{
+    if ($_.Exception.Response) {{
+        try {{
+            $errStream = $_.Exception.Response.GetResponseStream()
+            $errReader = New-Object System.IO.StreamReader($errStream, [System.Text.Encoding]::UTF8)
+            $errBody = $errReader.ReadToEnd()
+            $errReader.Close()
+            Write-Output "HTTP_ERROR:$($_.Exception.Response.StatusCode)::BODY::$errBody"
+        }} catch {{
+            Write-Error "HTTP_ERROR:$($_.Exception.Response.StatusCode)"
             exit 1
         }}
+    }} else {{
+        Write-Error "CONEXAO_FALHOU::$($_.Exception.Message)"
+        exit 1
     }}
-    """
-    
-    process = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, encoding='cp1252', errors='replace')
-    return process.returncode, process.stdout, process.stderr
+}} catch {{
+    Write-Error "ERRO_INESPERADO::$($_.Exception.Message)"
+    exit 1
+}}
+"""
+
+    try:
+        process = subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True, text=True, encoding='cp1252', errors='replace',
+            timeout=TIMEOUT_CONSULTA + 30
+        )
+        return process.returncode, process.stdout, process.stderr
+    finally:
+        # Limpa arquivo temporário
+        if os.path.exists(temp_xml_path):
+            os.remove(temp_xml_path)
+
 
 def iniciar_consulta():
-    print("--- Modulo de Consulta EFD-REINF ---")
+    """Ponto de entrada principal do módulo de consulta."""
+    print("=" * 50)
+    print("  MÓDULO DE CONSULTA EFD-REINF (Token A3)")
+    print("=" * 50)
+
     protocolo = input("Digite o numero do protocolo retornado pela transmissao: ").strip()
-    
+
     if not protocolo:
-        print("Protocolo invalido.")
+        print("[!] Protocolo invalido.")
         return
 
     print(f"[*] Consultando protocolo {protocolo} com Token A3...")
     return_code, stdout, stderr = consultar_via_powershell(protocolo, URL_CONSULTA)
-    
-    if return_code == 0 and stdout.strip():
+
+    if return_code == 0 and stdout.strip() and "HTTP_ERROR" not in stdout:
         arquivo_retorno = os.path.join(PASTA_PROTOCOLOS, f"CONSULTA_{protocolo}.xml")
         with open(arquivo_retorno, 'w', encoding='utf-8') as f:
             f.write(stdout)
         print(f"[✓] Consulta realizada! Resultado salvo em {arquivo_retorno}")
     else:
-        print(f"[X] Erro na conexao de consulta:\n{stderr}")
+        print(f"[X] Erro na conexao de consulta:")
+        if stdout.strip():
+            print(f"    STDOUT: {stdout[:500]}")
+        if stderr.strip():
+            print(f"    STDERR: {stderr[:500]}")
+
 
 if __name__ == "__main__":
     iniciar_consulta()
