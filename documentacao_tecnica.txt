@@ -4,7 +4,7 @@ CONTEÚDO TÉCNICO, RESTRIÇÕES E ARQUITETURA DO TOKEN A3:
 Todos os scripts Python importam o arquivo `config.py` para garantir caminhos absolutos e URIs padronizadas. Os scripts atuam apenas como orquestradores lógicos e geradores de texto (XML). A interação com o certificado digital NUNCA ocorre em Python puro.
 
 2. MECÂNICA DE USO DO CERTIFICADO FÍSICO (TOKEN A3):
-O Token A3 (Emitido pela AC Defesa, Titular: JONATAS DUTRA GOMES) é exigido pela Receita Federal em DUAS camadas distintas do processo. O Python delega essa comunicação ao PowerShell, que acessa o contêiner `Cert:\CurrentUser\My` do Windows.
+O Token A3 (Emitido pela AC Defesa, Titular: AAAA) é exigido pela Receita Federal em DUAS camadas distintas do processo. O Python delega essa comunicação ao PowerShell, que acessa o contêiner `Cert:\CurrentUser\My` do Windows.
 
    A) Camada de Assinatura (assinar_lotes.py) - [JÁ CONCLUÍDO E FUNCIONANDO]
       - Objetivo: Aplicar o algoritmo XMLDSig C14N dentro da tag `<ds:Signature>`.
