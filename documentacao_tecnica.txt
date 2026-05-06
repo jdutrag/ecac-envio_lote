@@ -1,0 +1,25 @@
+CONTEÚDO TÉCNICO, RESTRIÇÕES E ARQUITETURA DO TOKEN A3:
+
+1. INTEGRAÇÃO DOS SCRIPTS (config.py):
+Todos os scripts Python importam o arquivo `config.py` para garantir caminhos absolutos e URIs padronizadas. Os scripts atuam apenas como orquestradores lógicos e geradores de texto (XML). A interação com o certificado digital NUNCA ocorre em Python puro.
+
+2. MECÂNICA DE USO DO CERTIFICADO FÍSICO (TOKEN A3):
+O Token A3 (Emitido pela AC Defesa, Titular: JONATAS DUTRA GOMES) é exigido pela Receita Federal em DUAS camadas distintas do processo. O Python delega essa comunicação ao PowerShell, que acessa o contêiner `Cert:\CurrentUser\My` do Windows.
+
+   A) Camada de Assinatura (assinar_lotes.py) - [JÁ CONCLUÍDO E FUNCIONANDO]
+      - Objetivo: Aplicar o algoritmo XMLDSig C14N dentro da tag `<ds:Signature>`.
+      - Como o Token é acionado: O PowerShell usa a classe `[System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)`.
+      - Efeito: Isso força o driver do Token A3 a despertar e abrir a janela de PIN do Windows para liberar a chave privada.
+
+   B) Camada de Transmissão e Consulta (transmissao_a3.py e consulta_lotes.py) - [PONTO COM DEFEITO]
+      - Objetivo: Estabelecer o túnel criptografado SSL/TLS (Handshake) com o webservice governamental.
+      - Como o Token é acionado: O PowerShell usa `Invoke-WebRequest -Certificate $cert`.
+      - Efeito: O Windows negocia o protocolo TLS 1.2 com a Receita. O driver do Token deve autorizar a sessão usando o hardware.
+
+3. O ERRO ATUAL:
+A camada "A" (Assinatura) já foi resolvida com sucesso. O PIN é solicitado e a tag <Signature> é gerada.
+O problema reside exclusivamente na camada "B" (Transmissão). Ao enviar o XML validado via Invoke-WebRequest, o servidor da Receita derruba a conexão retornando: "A conexão subjacente estava fechada: Erro inesperado em um recebimento."
+
+4. AMBIENTE DE REDE:
+- Propriedades obrigatórias já mapeadas: `[Net.ServicePointManager]::Expect100Continue = $false` e uso de User-Agent simulando um navegador.
+- Missão da IA: Analisar o script `transmissao_a3.py` e propor configurações avançadas de System.Net ou métodos alternativos em PowerShell para forçar a manutenção da conexão TLS 1.2 aberta através do proxy/firewall até o recebimento do payload.

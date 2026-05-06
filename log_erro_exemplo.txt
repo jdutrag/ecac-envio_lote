@@ -1,0 +1,12 @@
+MENSAGEM DE ERRO ATUAL NO CMD AO EXECUTAR A TRANSMISSÃO:
+
+[*] Transmitindo lote assinado: Lote_R4020_20260505203801_1.xml...
+[X] Erro de conexao no lote:
+A conexão subjacente estava fechada: Erro inesperado em um recebimento.
+Na linha:27 caractere:13
++             Write-Error $_.Exception.Message
++             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException
+    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException
+
+ANÁLISE PRÉVIA: O PIN chega a ser solicitado e o arquivo está validado e assinado. O erro ocorre no fechamento do fluxo de dados (resposta do servidor da Receita derrubando o script).

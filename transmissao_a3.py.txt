@@ -1,0 +1,89 @@
+import os
+import glob
+import subprocess
+from config import PASTA_ENVIOS, PASTA_RECEBIDOS, PASTA_PROTOCOLOS, URL_PRODUCAO
+
+def transmitir_via_powershell(caminho_xml, url):
+    """
+    Script focado EXCLUSIVAMENTE na entrega e recebimento da resposta.
+    """
+    ps_cmd = f"""
+    $ErrorActionPreference = 'Stop'
+    [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("utf-8")
+    
+    # 1. Configurações críticas de rede
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.ServicePointManager]::Expect100Continue = $false
+    
+    # 2. Localiza o certificado para o handshake SSL
+    $cert = Get-ChildItem -Path Cert:\\CurrentUser\\My | Where-Object {{ $_.Subject -like "*JONATAS DUTRA GOMES*" }} | Select-Object -First 1
+    
+    if (-not $cert) {{
+        Write-Error "Certificado nao encontrado."
+        exit 1
+    }}
+
+    try {{
+        # Garante leitura sem caracteres de controle (BOM) que quebram a assinatura
+        $bytes = [System.IO.File]::ReadAllBytes("{caminho_xml}")
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        $xml = $encoding.GetString($bytes)
+        
+        $userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        
+        # O Invoke-WebRequest serve como ponte, disparando o PIN do hardware automaticamente
+        $response = Invoke-WebRequest -Uri "{url}" `
+            -Method Post `
+            -Body $xml `
+            -Certificate $cert `
+            -ContentType "application/xml; charset=utf-8" `
+            -UserAgent $userAgent `
+            -TimeoutSec 60
+        
+        Write-Output $response.Content
+    }} catch {{
+        if ($_.Exception.Response) {{
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $resBody = $reader.ReadToEnd()
+            Write-Output $resBody
+        }} else {{
+            Write-Error $_.Exception.Message
+            exit 1
+        }}
+    }}
+    """
+    
+    process = subprocess.run(
+        ["powershell", "-Command", ps_cmd], 
+        capture_output=True, text=True, encoding='cp1252', errors='replace'
+    )
+    return process.returncode, process.stdout, process.stderr
+
+def iniciar_transmissao():
+    print("--- Modulo de Transmissao EFD-REINF ---")
+    arquivos = glob.glob(os.path.join(PASTA_ENVIOS, "*.xml"))
+    if not arquivos: return
+
+    for arq_path in arquivos:
+        nome_arq = os.path.basename(arq_path)
+        print(f"[*] Enviando: {nome_arq}...")
+        
+        return_code, stdout, stderr = transmitir_via_powershell(arq_path, URL_PRODUCAO)
+        caminho_prot = os.path.join(PASTA_PROTOCOLOS, f"RESPOSTA_{nome_arq}")
+        
+        if return_code == 0 and stdout.strip():
+            with open(caminho_prot, 'w', encoding='utf-8') as f:
+                f.write(stdout)
+            
+            if "<cdStatus>1</cdStatus>" in stdout or "<retornoLoteEventos" in stdout:
+                os.rename(arq_path, os.path.join(PASTA_RECEBIDOS, nome_arq))
+                print(f"[✓] Transmitido e validado!")
+            else:
+                print(f"[!] Erro logico da Receita. Analise: RESPOSTA_{nome_arq}")
+        else:
+            with open(caminho_prot, 'w', encoding='utf-8') as f:
+                f.write(f"ERRO DE REDE:\n{stderr}")
+            print(f"[X] Falha na conexao HTTP/SSL.")
+
+if __name__ == "__main__":
+    iniciar_transmissao()

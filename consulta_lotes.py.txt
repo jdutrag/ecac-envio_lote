@@ -1,0 +1,80 @@
+import os
+import glob
+import subprocess
+from config import PASTA_PROTOCOLOS, URL_CONSULTA
+
+def consultar_via_powershell(protocolo, url):
+    """
+    Realiza a consulta do lote na Receita Federal via protocolo.
+    O Token A3 é exigido APENAS para estabelecer o túnel SSL/TLS da consulta.
+    """
+    # Monta o XML de requisição de consulta padrão do XSD
+    xml_consulta = f"""<?xml version="1.0" encoding="utf-8"?>
+    <Reinf xmlns="http://www.reinf.esocial.gov.br/schemas/envioLoteEventosAssincrono/v1_00_00">
+      <consultaLoteEventos>
+        <protocoloEnvio>{protocolo}</protocoloEnvio>
+      </consultaLoteEventos>
+    </Reinf>"""
+
+    ps_cmd = f"""
+    $ErrorActionPreference = 'Stop'
+    [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("utf-8")
+    
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.ServicePointManager]::Expect100Continue = $false
+    
+    # INVOCAÇÃO DO TOKEN A3: Acesso ao hardware para autenticação HTTPS
+    $cert = Get-ChildItem -Path Cert:\\CurrentUser\\My | Where-Object {{ $_.Subject -like "*JONATAS DUTRA GOMES*" }} | Select-Object -First 1
+    
+    if (-not $cert) {{
+        Write-Error "Certificado A3 nao encontrado no Windows."
+        exit 1
+    }}
+
+    try {{
+        $userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        
+        $response = Invoke-WebRequest -Uri "{url}" `
+            -Method Post `
+            -Body '{xml_consulta}' `
+            -Certificate $cert `
+            -ContentType "application/xml; charset=utf-8" `
+            -UserAgent $userAgent `
+            -TimeoutSec 60
+        
+        Write-Output $response.Content
+    }} catch {{
+        if ($_.Exception.Response) {{
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            Write-Output $reader.ReadToEnd()
+        }} else {{
+            Write-Error $_.Exception.Message
+            exit 1
+        }}
+    }}
+    """
+    
+    process = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, encoding='cp1252', errors='replace')
+    return process.returncode, process.stdout, process.stderr
+
+def iniciar_consulta():
+    print("--- Modulo de Consulta EFD-REINF ---")
+    protocolo = input("Digite o numero do protocolo retornado pela transmissao: ").strip()
+    
+    if not protocolo:
+        print("Protocolo invalido.")
+        return
+
+    print(f"[*] Consultando protocolo {protocolo} com Token A3...")
+    return_code, stdout, stderr = consultar_via_powershell(protocolo, URL_CONSULTA)
+    
+    if return_code == 0 and stdout.strip():
+        arquivo_retorno = os.path.join(PASTA_PROTOCOLOS, f"CONSULTA_{protocolo}.xml")
+        with open(arquivo_retorno, 'w', encoding='utf-8') as f:
+            f.write(stdout)
+        print(f"[✓] Consulta realizada! Resultado salvo em {arquivo_retorno}")
+    else:
+        print(f"[X] Erro na conexao de consulta:\n{stderr}")
+
+if __name__ == "__main__":
+    iniciar_consulta()

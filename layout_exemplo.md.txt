@@ -1,0 +1,12 @@
+# Mapeamento de Dados - Extração SIAFI
+Os arquivos XML já assinados baseiam-se em uma extração do SIAFI com as seguintes colunas principais. A individualização de cada concessão por suprido é feita pelo atributo `DH`.
+
+| Coluna | Descrição |
+| :--- | :--- |
+| `DH` | Número da liquidação (Chave primária para a individualização do suprido). |
+| `dtPrdoApuracao` | Data de apuração do evento. |
+| `codRecolhedor` | CNPJ do beneficiário PJ (Limpo para o envio: sem pontos/traços). |
+| `txtInscrB59` | Natureza do rendimento. |
+| `txtObser67` | Observações do pagamento. |
+| `vlrBaseCalculo` | Valor bruto do pagamento. |
+| `vlr66` | Valor da retenção / Valor agregado. |

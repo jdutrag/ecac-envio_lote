@@ -1,0 +1,19 @@
+import os
+
+# --- Configurações do Órgão ---
+CNPJ_ORGAO = "00000000000100"  # Substitua pelo CNPJ real da Marinha nos testes locais
+AMBIENTE = "1"                 # 1 = Produção, 2 = Produção Restrita (Homologação)
+
+# --- Estrutura de Diretórios ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PASTA_ENVIOS = os.path.join(BASE_DIR, "envios")
+PASTA_RECEBIDOS = os.path.join(BASE_DIR, "recebidos")
+PASTA_PROTOCOLOS = os.path.join(BASE_DIR, "protocolos")
+
+# Cria as pastas caso não existam no momento da execução
+for pasta in [PASTA_ENVIOS, PASTA_RECEBIDOS, PASTA_PROTOCOLOS]:
+    os.makedirs(pasta, exist_ok=True)
+
+# --- URLs do Webservice (Receita Federal) ---
+URL_PRODUCAO = "https://reinf.receita.economia.gov.br/recepcao/lotes"
+URL_CONSULTA = "https://reinf.receita.economia.gov.br/consulta/lotes"
