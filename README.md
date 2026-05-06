@@ -1,61 +1,32 @@
-# ecac-envio_lote
-Repositório de envio em lote de dados xml à receita federal por API REST dos eventos da série R-4020
+# Transmissão EFD-REINF (Série R-4000) via Token A3
 
-Automação de Transmissão EFD-REINF (Série R-4000)
+## ⚠️ AVISO IMPORTANTE PARA A IA
+**NÃO altere ou analise a lógica de geração e assinatura dos lotes XML.** 
+A rotina de extração de dados e a injeção da assinatura digital (`<ds:Signature>`) via XMLDSig já foram exaustivamente testadas e estão 100% funcionais. Os arquivos na pasta `/envios` já possuem validade jurídica.
+**O foco exclusivo deste projeto é a camada de REDE: a transmissão e consulta dos arquivos assinados superando barreiras de firewall e proxy.**
 
-Este projeto tem como objetivo automatizar a transmissão de lotes de eventos da série R-4000 para a EFD-REINF, utilizando certificados digitais A3 (Token/Cartão) e garantindo a organização dos protocolos de recebimento para auditoria e conformidade.
-1. Estrutura do Projeto
+## 📌 Contexto
+Este módulo é responsável por pegar lotes XML validados e transmiti-los para o webservice da Receita Federal utilizando um certificado digital físico (Token A3). 
 
-A organização dos arquivos segue um fluxo lógico para evitar o reprocessamento de lotes e facilitar a consulta posterior.
-Plaintext
+## 🛠️ Arquitetura de Transmissão
+* O Python atua apenas como orquestrador de pastas.
+* O "trabalho pesado" de rede e criptografia é delegado ao **PowerShell**, que atua como ponte com o hardware (Token A3), disparando nativamente a janela de PIN do Windows e estabelecendo o túnel SSL/TLS.
+* Foi adotada a técnica de forçar a conexão via `.NET` (`Invoke-WebRequest` ou `System.Net.HttpWebRequest`) para superar limitações de redes corporativas restritas (como as de órgãos públicos).
 
-/EFD-REINF
+## 🚀 Como Executar
+1. Garanta que os arquivos `.xml` assinados estejam na pasta `envios/`.
+2. O Token A3 (Autoridade Certificadora da Defesa) deve estar conectado.
+3. Execute: `python transmissao_a3.py`
+
+4. C:\Users\EFD-REINF\
 │
-├── /envios           # XMLs gerados (lotes de 50 eventos) aguardando transmissão.
-├── /recebidos        # XMLs que foram transmitidos com sucesso.
-├── /protocolos       # Retornos da Receita Federal (Protocolo de Envio/Recibo).
+├── envios/               # Arquivos XML gerados e ASSINADOS (Aguardando transmissão)
+├── recebidos/            # Arquivos XML transmitidos com sucesso (Movidos para cá após o recibo)
+├── protocolos/           # Respostas da Receita Federal (Recibos de sucesso ou logs de erro/HTTP 422)
 │
-├── transmissao.py    # Script principal de comunicação via REST.
-├── consulta.py       # Script para buscar o resultado do processamento.
-└── manual_reinf.pdf  # Manual do Desenvolvedor (v2.7) utilizado como base.
-
-2. Processo de Transmissão e Consulta
-
-O projeto baseia-se nas orientações do Manual do Desenvolvedor da EFD-REINF, seguindo o modelo de comunicação assíncrona.
-Lógica de Transmissão (transmissao.py)
-
-    Varredura: O script identifica arquivos .xml na pasta /envios.
-
-    Autenticação: Realiza o handshake SSL utilizando o certificado digital A3 (emitido pela Autoridade Certificadora da Defesa).
-
-    Envio: Os lotes são enviados via método POST para o endpoint de recepção da Receita Federal.
-
-    Protocolo: O ID do protocolo retornado é salvo na pasta /protocolos e o arquivo original é movido para /recebidos.
-
-Lógica de Consulta (consulta.py)
-
-    Leitura: O script lê os protocolos pendentes na pasta /protocolos.
-
-    Verificação: Consulta o endpoint de processamento da Receita para verificar se o lote foi aceito ou se apresenta erros de validação.
-
-    Finalização: Armazena o recibo definitivo de entrega.
-
-3. Desafios Técnicos e Evolução do Modelo
-
-O principal desafio deste projeto foi a comunicação entre o interpretador Python e o hardware do Certificado Digital A3.
-
-    Modelo Inicial: Tentativa de uso da biblioteca requests com OpenSSL padrão. Este modelo resultou em Erro 496 (Certificado de Cliente Ausente), pois o Python não acessava nativamente a chave privada protegida pelo driver DXSafePKCS11.dll.
-
-    Modelo de Integração (Schannel): Tentativa de forçar o Python a utilizar a camada de segurança do Windows (onde o certificado já está operacional) através da biblioteca pip-system-certs.
-
-    Abordagem Atual: Para garantir a estabilidade em ambiente de produção (especialmente em organizações hierarquizadas e burocráticas), o modelo evoluiu para utilizar ferramentas nativas do sistema operacional que possuem acesso direto ao repositório de certificados do Windows.
-
-4. Requisitos de Sistema
-
-    Certificado Digital: Tipo A3 (Token ou Cartão) devidamente instalado e operacional no Windows.
-
-    Drivers: Driver PKCS#11 compatível (ex: DXSafe para AC Defesa).
-
-    Acesso à Rede: Liberação de firewall para os endpoints da Receita Federal nas portas 443.
-
-    Nota de Contexto: Este projeto foi desenvolvido para atender às necessidades de execução financeira e orçamentária no âmbito da Marinha do Brasil, visando automatizar a transformação de dados provenientes do SIAFI em eventos válidos para a Receita Federal.
+├── config.py             # Variáveis globais (URLs, CNPJ, Caminhos das pastas)
+├── transmissao_a3.py     # Script principal (Foco da análise da IA)
+├── requirements.txt      # Dependências do Python
+├── layout_exemplo.md     # Mapeamento do tabelão do SIAFI
+├── log_erro_exemplo.txt  # Exemplo do erro de Handshake que estamos enfrentando
+└── documentacao_tecnica.txt # Restrições de rede e hardware
