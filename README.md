@@ -18,7 +18,9 @@ Este módulo é responsável por pegar lotes XML validados e transmiti-los para 
 2. O Token A3 (Autoridade Certificadora da Defesa) deve estar conectado.
 3. Execute: `python transmissao_a3.py`
 
-4. C:\Users\EFD-REINF\
+
+## Plaintext
+C:\Users\EFD-REINF\
 │
 ├── envios/               # Arquivos XML gerados e ASSINADOS (Aguardando transmissão)
 ├── recebidos/            # Arquivos XML transmitidos com sucesso (Movidos para cá após o recibo)
