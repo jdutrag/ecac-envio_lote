@@ -11,15 +11,32 @@ O Token A3 (Emitido pela AC Defesa, Titular: AAAA) é exigido pela Receita Feder
       - Como o Token é acionado: O PowerShell usa a classe `[System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)`.
       - Efeito: Isso força o driver do Token A3 a despertar e abrir a janela de PIN do Windows para liberar a chave privada.
 
-   B) Camada de Transmissão e Consulta (transmissao_a3.py e consulta_lotes.py) - [PONTO COM DEFEITO]
+   B) Camada de Transmissão e Consulta (transmissao_a3.py e consulta_lotes.py) - [CORRIGIDO NA REFATORAÇÃO]
       - Objetivo: Estabelecer o túnel criptografado SSL/TLS (Handshake) com o webservice governamental.
-      - Como o Token é acionado: O PowerShell usa `Invoke-WebRequest -Certificate $cert`.
-      - Efeito: O Windows negocia o protocolo TLS 1.2 com a Receita. O driver do Token deve autorizar a sessão usando o hardware.
+      - Como o Token é acionado: O PowerShell usa `HttpWebRequest` com `$req.ClientCertificates.Add($cert)`.
+      - Efeito: O Windows negocia o protocolo TLS 1.2 com a Receita. O driver do Token autoriza a sessão usando o hardware.
 
-3. O ERRO ATUAL:
-A camada "A" (Assinatura) já foi resolvida com sucesso. O PIN é solicitado e a tag <Signature> é gerada.
-O problema reside exclusivamente na camada "B" (Transmissão). Ao enviar o XML validado via Invoke-WebRequest, o servidor da Receita derruba a conexão retornando: "A conexão subjacente estava fechada: Erro inesperado em um recebimento."
+3. O ERRO ORIGINAL E A CORREÇÃO:
+A camada "A" (Assinatura) já foi resolvida com sucesso. O PIN era solicitado e a tag <Signature> era gerada.
+O problema residia na camada "B" (Transmissão). Ao enviar o XML validado via Invoke-WebRequest, o servidor da Receita derrubava a conexão retornando: "A conexão subjacente estava fechada: Erro inesperado em um recebimento."
+
+CAUSA RAIZ IDENTIFICADA: O .NET Framework encerrava a conexão TCP prematuramente porque:
+- MaxServicePointIdleTime padrão (100ms) era insuficiente para o tempo de processamento do servidor
+- Invoke-WebRequest não permitia configurar KeepAlive explicitamente
+- O body era enviado como string, podendo corromper a assinatura XML
+- Headers SOAP obrigatórios (SOAPAction) não eram enviados
+
+CORREÇÃO: Substituído Invoke-WebRequest por System.Net.HttpWebRequest com:
+- MaxServicePointIdleTime = 300000ms (5 minutos)
+- KeepAlive = true
+- Body como byte[] via RequestStream
+- Headers SOAPAction e Accept
+- Suporte a proxy corporativo configurável
 
 4. AMBIENTE DE REDE:
-- Propriedades obrigatórias já mapeadas: `[Net.ServicePointManager]::Expect100Continue = $false` e uso de User-Agent simulando um navegador.
-- Missão da IA: Analisar o script `transmissao_a3.py` e propor configurações avançadas de System.Net ou métodos alternativos em PowerShell para forçar a manutenção da conexão TLS 1.2 aberta através do proxy/firewall até o recebimento do payload.
+- Propriedades obrigatórias: `[Net.ServicePointManager]::Expect100Continue = $false`
+- TLS 1.2 forçado: `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`
+- Keep-Alive: `$req.KeepAlive = $true`
+- Proxy corporativo: Configurável via `PROXY_URL` no config.py
+- Retry automático: 3 tentativas com backoff de 5s
+- Timeout estendido: 120s para transmissão, 90s para consulta

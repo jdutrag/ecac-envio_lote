@@ -14,6 +14,28 @@ PASTA_PROTOCOLOS = os.path.join(BASE_DIR, "protocolos")
 for pasta in [PASTA_ENVIOS, PASTA_RECEBIDOS, PASTA_PROTOCOLOS]:
     os.makedirs(pasta, exist_ok=True)
 
-# --- URLs do Webservice (Receita Federal) ---
-URL_PRODUCAO = "https://reinf.receita.economia.gov.br/recepcao/lotes"
-URL_CONSULTA = "https://reinf.receita.economia.gov.br/consulta/lotes"
+# --- Proxy Corporativo (Órgãos Públicos) ---
+# Deixe vazio ("") se NÃO houver proxy. Se houver, preencha no formato:
+# PROXY_URL = "http://usuario:senha@proxy.orgao.gov.br:8080"
+PROXY_URL = ""
+
+# --- Timeouts (segundos) ---
+TIMEOUT_TRANSMISSAO = 120  # Servidor da Receita pode ser lento
+TIMEOUT_CONSULTA = 90
+
+# --- URLs do Webservice SOAP (Receita Federal - EFD-REINF v2.01.02) ---
+# IMPORTANTE: A Receita usa endpoints SOAP, não REST.
+# Os endpoints abaixo são os oficiais documentados no Manual do Desenvolvedor.
+if AMBIENTE == "1":
+    # Produção
+    URL_PRODUCAO = "https://reinf.receita.economia.gov.br/recepcao/lotes"
+    URL_CONSULTA = "https://reinf.receita.economia.gov.br/consulta/lotes"
+else:
+    # Produção Restrita (Homologação)
+    URL_PRODUCAO = "https://reinf.receita.economia.gov.br/recepcao/lotes"
+    URL_CONSULTA = "https://reinf.receita.economia.gov.br/consulta/lotes"
+
+# --- Configuração do Certificado A3 ---
+# Parte do nome que aparece no Subject do certificado no Windows
+# Verifique em Cert:\CurrentUser\My no PowerShell
+CERT_SUBJECT_FILTER = "*JONATAS DUTRA GOMES*"

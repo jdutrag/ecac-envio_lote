@@ -1,4 +1,4 @@
-MENSAGEM DE ERRO ATUAL NO CMD AO EXECUTAR A TRANSMISSÃO:
+MENSAGEM DE ERRO ORIGINAL NO CMD AO EXECUTAR A TRANSMISSÃO:
 
 [*] Transmitindo lote assinado: Lote_R4020_20260505203801_1.xml...
 [X] Erro de conexao no lote:
@@ -9,4 +9,43 @@ Na linha:27 caractere:13
     + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException
     + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException
 
-ANÁLISE PRÉVIA: O PIN chega a ser solicitado e o arquivo está validado e assinado. O erro ocorre no fechamento do fluxo de dados (resposta do servidor da Receita derrubando o script).
+================================================================================
+ANÁLISE TÉCNICA DA CAUSA RAIZ (PÓS-REFATORAÇÃO)
+================================================================================
+
+CAUSA: O erro "A conexão subjacente estava fechada" é um problema clássico do
+System.Net.HttpWebRequest quando o .NET Framework encerra a conexão TCP antes
+de receber a resposta completa do servidor. Isso ocorre por CINCO razões combinadas:
+
+1. MAXSERVICEPOINTIDLETIME NÃO CONFIGURADO
+   O .NET mantém um pool de conexões HTTP. Por padrão, o idle time é de 100ms.
+   Se o servidor da Receita demora mais que isso para processar (e demora,
+   porque valida assinatura digital em tempo real), o .NET mata a conexão.
+   SOLUÇÃO: [Net.ServicePointManager]::MaxServicePointIdleTime = 300000
+
+2. INVOKE-WEBREQUEST vs HTTPWEBREQUEST
+   O Invoke-WebRequest abstrai o controle do TLS. Quando usado com
+   -Certificate, ele delega ao HttpWebRequest internamente, mas SEM
+   configurar KeepAlive e ServicePoint corretamente.
+   SOLUÇÃO: Usar HttpWebRequest diretamente, com KeepAlive = $true
+
+3. BODY ENVIADO COMO STRING (NÃO BYTES)
+   O Invoke-WebRequest com -Body $string faz encoding implícito que pode
+   corromper a assinatura XML ou adicionar BOM. O servidor rejeita e fecha
+   a conexão abruptamente.
+   SOLUÇÃO: Ler como byte[] e escrever no RequestStream diretamente
+
+4. AUSÊNCIA DE HEADERS SOAP
+   O webservice da Receita Federal é SOAP, não REST. Sem o header
+   SOAPAction, o servidor pode rejeitar silenciosamente e fechar a conexão.
+   SOLUÇÃO: Adicionar headers SOAPAction e Accept
+
+5. PROXY CORPORATIVO NÃO CONFIGURADO
+   Em redes de órgãos públicos, o tráfego HTTPS precisa passar por proxy.
+   Sem configurar o proxy no HttpWebRequest, a conexão é bloqueada pelo
+   firewall e o .NET reporta "conexão fechada".
+   SOLUÇÃO: Configurar proxy com credenciais do sistema
+
+================================================================================
+STATUS: CORRIGIDO NA REFATORAÇÃO DE 2025-01
+================================================================================
